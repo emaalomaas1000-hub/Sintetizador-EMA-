@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Sintetizador Modular - V2.4</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+    <style>
+        body { background: #121212; color: #00ff9d; font-family: 'Courier New', Courier, monospace; }
+        .control-panel { border: 2px solid #00ff9d; border-radius: 15px; padding: 30px; margin-top: 50px; background: #1a1a1a; }
+        input[type=range] { width: 100%; accent-color: #00ff9d; }
+        select { background: #121212; color: #00ff9d; border: 1px solid #00ff9d; }
+        .status { font-size: 0.8rem; color: #555; }
+        #osciloscopio { background-color: #0a0a0a; border: 1px solid #00ff9d; border-radius: 10px; width: 100%; height: 150px; margin-top: 20px; }
+        
+        .piano-container { position: relative; width: 320px; height: 120px; margin: 30px auto; }
+        .tecla { position: absolute; top: 0; cursor: pointer; user-select: none; transition: transform 0.05s; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 5px; line-height: 1.1; }
+        .tecla.blanca { width: 40px; height: 120px; background: #f0f0f0; color: #333; z-index: 1; border: 1px solid #999; border-radius: 0 0 5px 5px; font-weight: bold; box-shadow: 0 3px 5px rgba(0,0,0,0.5); }
+        .tecla.negra { width: 24px; height: 75px; background: #1a1a1a; color: #fff; font-size: 0.7rem; z-index: 2; border: 1px solid #000; border-radius: 0 0 3px 3px; box-shadow: 0 2px 3px rgba(0,0,0,0.5); }
+        .tecla.activa { transform: translateY(2px) scale(0.98); filter: brightness(0.8); background-color: #00ff9d; color: #000; }
+        .letra-pc { font-size: 0.65rem; color: #888; margin-top: 2px; }
+        .tecla.negra .letra-pc { color: #aaa; }
+
+        /* ESTILOS DE LA CAJA DE RITMOS */
+        .drum-machine { background: #0a0a0a; border: 1px solid #333; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+        .step-btn { width: 35px; height: 40px; background: #222; border: 2px solid #111; border-radius: 4px; cursor: pointer; transition: 0.1s; }
+        .step-btn:hover { background: #333; }
+        .step-btn.activo { background: #00ff9d; box-shadow: 0 0 8px rgba(0,255,157,0.6); border-color: #00cc7d; }
+        .step-btn.actual { border-color: #fff; transform: scale(1.05); } 
+        .etiqueta-fila { display: flex; align-items: center; justify-content: flex-end; font-weight: bold; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+<div class="container text-center">
+    <div class="control-panel shadow-lg">
+        <h2 class="mb-4">INSTRUMENTO VIRTUAL V2.4 (CON MEMORIA)</h2>
+        
+        <div class="row">
+            <div class="col-md-3 mb-4">
+                <label class="form-label fw-bold">FORMA DE ONDA (BAJO)</label>
+                <select class="form-select text-center" onchange="cambiarOnda(this.value)">
+                    <option value="triangle">Triangular</option>
+                    <option value="sawtooth">Diente de Sierra</option>
+                    <option value="square">Cuadrada</option>
+                </select>
+            </div>
+            <div class="col-md-3 mb-4">
+                <label class="form-label fw-bold">DISTORSIÓN</label>
+                <input type="range" min="0" max="1" step="0.01" value="0" oninput="cambiarDistorsion(this.value)">
+            </div>
+            <div class="col-md-3 mb-4">
+                <label class="form-label fw-bold">FILTRO (Hz)</label>
+                <input type="range" min="100" max="5000" value="1000" oninput="cambiarFiltro(this.value)">
+            </div>
+            <div class="col-md-3 mb-4">
+                <label class="form-label fw-bold">BPM</label>
+                <input type="range" min="80" max="200" value="140" oninput="cambiarBPM(this.value)">
+            </div>
+        </div>
+
+        <!-- MATRIZ DE CAJA DE RITMOS -->
+        <div class="drum-machine">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="m-0 text-start"><i class="bi bi-grid-3x3-gap-fill"></i> PROGRAMADOR DE RITMOS</h5>
+                <div>
+                    <button class="btn btn-sm btn-outline-info me-2" onclick="guardarRitmo()"><i class="bi bi-save"></i> GUARDAR</button>
+                    <button class="btn btn-sm btn-outline-info" onclick="cargarRitmo()"><i class="bi bi-folder2-open"></i> CARGAR</button>
+                </div>
+            </div>
+            
+            <div class="row mb-2">
+                <div class="col-2 etiqueta-fila">BOMBO</div>
+                <div class="col-10 d-flex" id="grid-kick"></div>
+            </div>
+            
+            <div class="row">
+                <div class="col-2 etiqueta-fila">HAT/GÜIRO</div>
+                <div class="col-10 d-flex" id="grid-hat"></div>
+            </div>
+        </div>
+
+        <div class="row mt-3 p-3 bg-dark rounded">
+            <h5 class="mb-3">MIXER (dB)</h5>
+            <div class="col-4"><label>BAJO</label><input type="range" min="-30" max="0" value="-6" oninput="volMelodia.volume.value = this.value"></div>
+            <div class="col-4"><label>BOMBO</label><input type="range" min="-30" max="0" value="-2" oninput="volKick.volume.value = this.value"></div>
+            <div class="col-4"><label>HI-HAT</label><input type="range" min="-30" max="0" value="-6" oninput="volHat.volume.value = this.value"></div>
+        </div>
+
+        <div class="mt-4">
+            <button class="btn btn-outline-success me-2" onclick="iniciarBanda()"><i class="bi bi-play-fill"></i> PLAY</button>
+            <button class="btn btn-outline-danger me-4" onclick="detenerBanda()"><i class="bi bi-stop-fill"></i> STOP</button>
+            <button id="btnGrabar" class="btn btn-outline-warning" onclick="toggleGrabacion()"><i class="bi bi-record-circle"></i> GRABAR AUDIO</button>
+        </div>
+
+        <div class="piano-container">
+            <div class="tecla blanca" data-nota="C4" style="left: 0px;">C<span class="letra-pc">A</span></div>
+            <div class="tecla negra" data-nota="C#4" style="left: 28px;"><span class="letra-pc">W</span></div>
+            <div class="tecla blanca" data-nota="D4" style="left: 40px;">D<span class="letra-pc">S</span></div>
+            <div class="tecla negra" data-nota="D#4" style="left: 68px;"><span class="letra-pc">E</span></div>
+            <div class="tecla blanca" data-nota="E4" style="left: 80px;">E<span class="letra-pc">D</span></div>
+            <div class="tecla blanca" data-nota="F4" style="left: 120px;">F<span class="letra-pc">F</span></div>
+            <div class="tecla negra" data-nota="F#4" style="left: 148px;"><span class="letra-pc">T</span></div>
+            <div class="tecla blanca" data-nota="G4" style="left: 160px;">G<span class="letra-pc">G</span></div>
+            <div class="tecla negra" data-nota="G#4" style="left: 188px;"><span class="letra-pc">Y</span></div>
+            <div class="tecla blanca" data-nota="A4" style="left: 200px;">A<span class="letra-pc">H</span></div>
+            <div class="tecla negra" data-nota="A#4" style="left: 228px;"><span class="letra-pc">U</span></div>
+            <div class="tecla blanca" data-nota="B4" style="left: 240px;">B<span class="letra-pc">J</span></div>
+            <div class="tecla blanca" data-nota="C5" style="left: 280px;">C<span class="letra-pc">K</span></div>
+        </div>
+
+        <canvas id="osciloscopio" width="800" height="200"></canvas>
+    </div>
+</div>
+
+<script>
+    const analizador = new Tone.Waveform(1024).toDestination();
+    const grabadora = new Tone.Recorder();
+    analizador.connect(grabadora);
+
+    const volMelodia = new Tone.Volume(-6).connect(analizador);
+    const volKick = new Tone.Volume(-2).connect(analizador); 
+    const volHat = new Tone.Volume(-6).connect(analizador);
+
+    const reverb = new Tone.Reverb(2.5).connect(volMelodia);
+    const delay = new Tone.FeedbackDelay("8n", 0.4).connect(reverb);
+    const filtro = new Tone.Filter(1000, "lowpass").connect(delay);
+    const distorsion = new Tone.Distortion(0).connect(filtro);
+    const synth = new Tone.Synth().connect(distorsion);
+    
+    const tecladoSynth = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: "sine" },
+        envelope: { attack: 0.05, decay: 0.1, sustain: 0.3, release: 1 }
+    }).connect(reverb);
+
+    const kick = new Tone.Player("https://tonejs.github.io/audio/drum-samples/acoustic-kit/kick.mp3").connect(volKick);
+    const hat = new Tone.Player("https://tonejs.github.io/audio/drum-samples/acoustic-kit/hihat.mp3").connect(volHat);
+
+    // --- VARIABLES DE MEMORIA DE LA CAJA DE RITMOS ---
+    const kickPattern = [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0];
+    const hatPattern =  [0,0,1,1, 0,0,1,1, 0,0,1,1, 0,0,1,1];
+
+    function inicializarGrilla(idContainer, pattern) {
+        const container = document.getElementById(idContainer);
+        for(let bloque = 0; bloque < 4; bloque++) {
+            const grupo = document.createElement('div');
+            grupo.className = "d-flex gap-1 me-4"; 
+            for(let i = 0; i < 4; i++) {
+                let stepIndex = (bloque * 4) + i;
+                const btn = document.createElement('div');
+                btn.className = `step-btn ${pattern[stepIndex] ? 'activo' : ''}`;
+                btn.dataset.step = stepIndex;
+                btn.onclick = () => {
+                    pattern[stepIndex] = pattern[stepIndex] ? 0 : 1;
+                    btn.classList.toggle('activo');
+                };
+                grupo.appendChild(btn);
+            }
+            container.appendChild(grupo);
+        }
+    }
+
+    inicializarGrilla('grid-kick', kickPattern);
+    inicializarGrilla('grid-hat', hatPattern);
+
+    // --- LÓGICA DE MEMORIA (GUARDAR / CARGAR RITMOS) ---
+    function guardarRitmo() {
+        const data = { kick: kickPattern, hat: hatPattern };
+        localStorage.setItem('ritmoGuardado', JSON.stringify(data));
+        alert("¡Patrón guardado en la memoria!");
+    }
+
+    function cargarRitmo() {
+        const dataGuardada = localStorage.getItem('ritmoGuardado');
+        if (dataGuardada) {
+            const data = JSON.parse(dataGuardada);
+            for(let i=0; i<16; i++) {
+                kickPattern[i] = data.kick[i];
+                hatPattern[i] = data.hat[i];
+            }
+            document.querySelectorAll('#grid-kick .step-btn').forEach((btn, index) => {
+                if (kickPattern[index]) btn.classList.add('activo');
+                else btn.classList.remove('activo');
+            });
+            document.querySelectorAll('#grid-hat .step-btn').forEach((btn, index) => {
+                if (hatPattern[index]) btn.classList.add('activo');
+                else btn.classList.remove('activo');
+            });
+        } else {
+            alert("No hay ningún ritmo guardado todavía.");
+        }
+    }
+
+    // --- SECUENCIADOR MAESTRO UNIFICADO ---
+    const indicesPasos = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+    const notasBajoFijas = [null, null, "C2", null, null, null, "G1", null, null, null, "C2", null, null, null, "G1", null];
+
+    const masterLoop = new Tone.Sequence((time, step) => {
+        if (kickPattern[step]) kick.start(time);
+        if (hatPattern[step]) hat.start(time);
+        if (notasBajoFijas[step]) synth.triggerAttackRelease(notasBajoFijas[step], "16n", time);
+
+        Tone.Draw.schedule(() => {
+            document.querySelectorAll('.step-btn').forEach(btn => btn.classList.remove('actual'));
+            document.querySelectorAll(`.step-btn[data-step="${step}"]`).forEach(btn => btn.classList.add('actual'));
+        }, time);
+    }, indicesPasos, "16n");
+
+    // --- FUNCIONES DE CONTROL ---
+    async function iniciarBanda() { 
+        await Tone.start(); 
+        await Tone.loaded(); 
+        Tone.Transport.bpm.value = 140; 
+        Tone.Transport.start(); 
+        masterLoop.start(0); 
+    }
+    
+    function detenerBanda() { 
+        Tone.Transport.stop(); 
+        masterLoop.stop(); 
+        document.querySelectorAll('.step-btn').forEach(btn => btn.classList.remove('actual'));
+    }
+    
+    function cambiarDistorsion(v) { distorsion.distortion = parseFloat(v); }
+    function cambiarFiltro(v) { filtro.frequency.value = v; }
+    function cambiarBPM(v) { Tone.Transport.bpm.value = v; }
+    function cambiarOnda(t) { synth.oscillator.type = t; }
+
+    const teclas = document.querySelectorAll('.tecla');
+    const mapaTeclas = { 'a':'C4', 'w':'C#4', 's':'D4', 'e':'D#4', 'd':'E4', 'f':'F4', 't':'F#4', 'g':'G4', 'y':'G#4', 'h':'A4', 'u':'A#4', 'j':'B4', 'k':'C5' };
+    const teclasPresionadas = {};
+
+    function presionarNota(nota) {
+        if (!teclasPresionadas[nota]) {
+            teclasPresionadas[nota] = true;
+            tecladoSynth.triggerAttack(nota);
+            const teclaDOM = document.querySelector(`.tecla[data-nota="${nota}"]`);
+            if(teclaDOM) teclaDOM.classList.add('activa');
+        }
+    }
+
+    function soltarNota(nota) {
+        if (teclasPresionadas[nota]) {
+            teclasPresionadas[nota] = false;
+            tecladoSynth.triggerRelease(nota);
+            const teclaDOM = document.querySelector(`.tecla[data-nota="${nota}"]`);
+            if(teclaDOM) teclaDOM.classList.remove('activa');
+        }
+    }
+
+    teclas.forEach(teclaDOM => {
+        const nota = teclaDOM.getAttribute('data-nota');
+        const tocar = async (e) => { e.preventDefault(); await Tone.start(); presionarNota(nota); };
+        const soltar = (e) => { e.preventDefault(); soltarNota(nota); };
+        teclaDOM.addEventListener('mousedown', tocar);
+        teclaDOM.addEventListener('mouseup', soltar);
+        teclaDOM.addEventListener('mouseleave', soltar);
+        teclaDOM.addEventListener('touchstart', tocar);
+        teclaDOM.addEventListener('touchend', soltar);
+    });
+
+    window.addEventListener('keydown', async (e) => {
+        if (e.repeat) return;
+        const nota = mapaTeclas[e.key.toLowerCase()];
+        if (nota) { await Tone.start(); presionarNota(nota); }
+    });
+
+    window.addEventListener('keyup', (e) => {
+        const nota = mapaTeclas[e.key.toLowerCase()];
+        if (nota) soltarNota(nota);
+    });
+
+    let grabando = false;
+    async function toggleGrabacion() {
+        const btn = document.getElementById("btnGrabar");
+        if (!grabando) {
+            grabadora.start();
+            grabando = true;
+            btn.classList.replace("btn-outline-warning", "btn-danger");
+            btn.innerHTML = '<i class="bi bi-stop-circle"></i> DETENER GRABACIÓN';
+        } else {
+            const audioBlob = await grabadora.stop();
+            grabando = false;
+            btn.classList.replace("btn-danger", "btn-outline-warning");
+            btn.innerHTML = '<i class="bi bi-record-circle"></i> GRABAR AUDIO';
+            const url = URL.createObjectURL(audioBlob);
+            const anchor = document.createElement("a");
+            anchor.download = "zapada.webm";
+            anchor.href = url;
+            anchor.click();
+        }
+    }
+
+    const ctx = document.getElementById("osciloscopio").getContext("2d");
+    function dibujar() {
+        requestAnimationFrame(dibujar);
+        ctx.fillStyle = "rgba(10, 10, 10, 0.4)"; 
+        ctx.fillRect(0, 0, 800, 200);
+        const valores = analizador.getValue();
+        
+        ctx.beginPath(); ctx.strokeStyle = "rgba(0, 100, 50, 0.5)"; ctx.lineWidth = 8; 
+        valores.forEach((v, i) => { const x = ((i/1024)*800)+6, y = 100+(v*100)+6; i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y); });
+        ctx.stroke();
+
+        ctx.beginPath(); ctx.strokeStyle = "#00ff9d"; ctx.lineWidth = 3; ctx.shadowBlur = 15; ctx.shadowColor = "#00ff9d"; 
+        valores.forEach((v, i) => { const x = (i/1024)*800, y = 100+(v*100); i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y); });
+        ctx.stroke(); ctx.shadowBlur = 0; 
+    }
+    dibujar();
+
+    if (navigator.requestMIDIAccess) {
+        navigator.requestMIDIAccess().then(midiAccess => {
+            for (let input of midiAccess.inputs.values()) {
+                input.onmidimessage = leerDatosMIDI;
+            }
+        }).catch(() => console.error("Fallo de comunicación MIDI."));
+    }
+
+    function leerDatosMIDI(mensaje) {
+        const [comando, dato1, dato2] = mensaje.data;
+        if (comando === 144 || comando === 128) {
+            const nota = Tone.Frequency(dato1, "midi").toNote();
+            if (comando === 144 && dato2 > 0) {
+                Tone.start(); presionarNota(nota);
+            } else if (comando === 128 || (comando === 144 && dato2 === 0)) {
+                soltarNota(nota);
+            }
+        } else if (comando === 176) {
+            const minHz = 100, maxHz = 5000;
+            const freq = minHz + (dato2 / 127) * (maxHz - minHz);
+            cambiarFiltro(freq);
+            const slider = document.querySelector('input[type="range"][max="5000"]');
+            if (slider) slider.value = freq;
+        }
+    }
+</script>
+
+</body>
+</html>
