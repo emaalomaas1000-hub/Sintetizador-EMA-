@@ -338,3 +338,207 @@
 
 </body>
 </html>
+#include "main.h"
+#include <math.h>
+#include <string.h> // Necesario para memcpy
+
+// ==========================================
+// 1. CONFIGURACIONES, MACROS Y ENUMS
+// ==========================================
+#define SINE_SAMPLES      128
+#define MITAD_BUFFER      (SINE_SAMPLES / 2) // 64 muestras
+#define PI                3.14159265358979323846
+#define TIM_CLOCK_HZ      200000000  // Frecuencia de reloj del Timer (Ej: 200 MHz)
+
+typedef enum {
+    ONDA_SENOIDAL = 0,
+    ONDA_TRIANGULAR
+} TipoOndaTypeDef;
+
+// ==========================================
+// 2. MAPA DE MEMORIA Y BUFFERS
+// ==========================================
+// Buffer activo de trabajo: Forzado a la sección RAM_D1 (AXI SRAM) aislada de la caché
+uint32_t sine_lut[SINE_SAMPLES] __attribute__((section(".dma_buffer"))) __attribute__((aligned(4)));
+
+// Tablas maestras estáticas (Se calculan una sola vez al arrancar el micro)
+uint32_t master_sine[SINE_SAMPLES];
+uint32_t master_triangle[SINE_SAMPLES];
+
+// Variable de control de onda ("al vuelo")
+volatile TipoOndaTypeDef onda_seleccionada = ONDA_TRIANGULAR;
+
+// ==========================================
+// 3. MANEJADORES DE PERIFÉRICOS (CubeMX)
+// ==========================================
+extern DAC_HandleTypeDef hdac;
+extern TIM_HandleTypeDef htim6;
+
+// ==========================================
+// 4. PROTOTIPOS DE FUNCIÓN
+// ==========================================
+void MPU_Configurar_Zona_DMA(void);
+void precalcular_formas_de_onda(void);
+void start_signal_generation(void);
+void set_signal_frequency_hz(uint32_t frequency_hz);
+
+// ==========================================
+// 5. PUNTO DE ENTRADA PRINCIPAL
+// ==========================================
+int main(void) {
+    // Inicialización del sistema básico de la HAL
+    HAL_Init();
+    SystemClock_Config();
+    
+    // ESCUDO DE PROTECCIÓN: MPU activa ANTES que cualquier periférico
+    MPU_Configurar_Zona_DMA();
+
+    // Inicialización automática de periféricos (Configurados en CubeMX)
+    MX_GPIO_Init();
+    MX_DMA_Init();
+    MX_DAC1_Init();
+    MX_TIM6_Init();
+
+    // Preparar las tablas matemáticas en frío
+    precalcular_formas_de_onda();
+
+    // Arrancar la maquinaria del streaming por hardware
+    start_signal_generation();
+    
+    // Setear frecuencia inicial de trabajo a 1 kHz (1000 Hz)
+    set_signal_frequency_hz(1000);
+
+    // --- BUCLE PRINCIPAL ---
+    while (1) {
+        /* Tu CPU está 100% libre acá adentro para procesar algoritmos pesados, 
+           atender pantallas o recibir comandos por UART. 
+           Si cambiás el valor de 'onda_seleccionada' desde acá, el cambio analógico
+           en el pin se hará de forma armónica y perfecta en el próximo semiciclo. */
+           
+        HAL_Delay(1000); 
+    }
+}
+
+// ==========================================
+// 6. IMPLEMENTACIÓN DE FUNCIONES DE CONTROL
+// ==========================================
+
+/**
+  * @brief  Deshabilita la D-Cache para la zona de memoria del buffer DMA.
+  */
+void MPU_Configurar_Zona_DMA(void) {
+    // Deshabilitar la MPU para escribir registros
+    MPU->CTRL &= ~MPU_CTRL_ENABLE_Msk;
+
+    // Seleccionar la Región 0
+    MPU->RNR = 0;
+
+    // Dirección base física (Debe coincidir con tu mapa de memoria RAM_D1)
+    MPU->RBAR = (uint32_t)0x24000000; 
+
+    // Atributos RASR: No-Cacheable (C=0, B=0), Shareable (S=1), Tamaño 512KB (0x13)
+    MPU->RASR = (0x0 << MPU_RASR_XN_Pos)   | 
+                (0x3 << MPU_RASR_AP_Pos)   | 
+                (0x0 << MPU_RASR_TYPE_Pos) | 
+                (0x0 << MPU_RASR_B_Pos)    | 
+                (0x0 << MPU_RASR_C_Pos)    | 
+                (0x1 << MPU_RASR_S_Pos)    | 
+                (0x13 << MPU_RASR_SIZE_Pos)| 
+                (0x1 << MPU_RASR_ENABLE_Pos);
+
+    // Habilitar la MPU nuevamente
+    MPU->CTRL |= MPU_CTRL_ENABLE_Msk;
+}
+
+/**
+  * @brief  Genera los puntos matemáticos enteros (0 a 4095) de las formas de onda.
+  */
+void precalcular_formas_de_onda(void) {
+    const double offset = 2047.0;
+    const double amplitude = 2047.0;
+
+    // 1. Precalcular la onda Senoidal pura
+    for (int i = 0; i < SINE_SAMPLES; i++) {
+        double angle = (2.0 * PI * i) / SINE_SAMPLES;
+        master_sine[i] = (uint32_t)(offset + amplitude * sin(angle));
+    }
+    
+    // 2. Precalcular la onda Triangular simétrica
+    for (int i = 0; i < SINE_SAMPLES; i++) {
+        if (i < MITAD_BUFFER) {
+            // Rampa ascendente
+            master_triangle[i] = (uint32_t)((4095.0 / MITAD_BUFFER) * i);
+        } else {
+            // Rampa descendente
+            master_triangle[i] = (uint32_t)(4095.0 - ((4095.0 / MITAD_BUFFER) * (i - MITAD_BUFFER)));
+        }
+    }
+}
+
+/**
+  * @brief  Carga el buffer inicial y enciende los canales de streaming de hardware.
+  */
+void start_signal_generation(void) {
+    // Volcar una forma de onda inicial por defecto al buffer activo
+    uint32_t *fuente = (onda_seleccionada == ONDA_SENOIDAL) ? master_sine : master_triangle;
+    memcpy(sine_lut, fuente, SINE_SAMPLES * sizeof(uint32_t));
+
+    // LARGADA: Armar el canal del DAC en Canal 2 con el buffer limpio
+    HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_2, (uint32_t*)sine_lut, SINE_SAMPLES, DAC_ALIGN_12B_R);
+
+    // DISPARO: Encender el reloj de hardware que comanda el ritmo de muestras
+    HAL_TIM_Base_Start(&htim6);
+}
+
+/**
+  * @brief  Modifica la frecuencia analógica de salida recalculando el ARR del Timer.
+  */
+void set_signal_frequency_hz(uint32_t frequency_hz) {
+    if (frequency_hz == 0) return;
+
+    // Fórmula del reloj: ARR = F_timer / (F_out * Muestras) - 1
+    uint32_t nuevo_valor_arr = (TIM_CLOCK_HZ / (frequency_hz * SINE_SAMPLES)) - 1;
+
+    // Inyección directa por macro sobre el registro de hardware
+    __HAL_TIM_SET_AUTORELOAD(&htim6, nuevo_valor_arr);
+}
+
+// ==========================================
+// 7. CALLBACKS DE INTERRUPCIÓN (ISR)
+// ==========================================
+
+/**
+  * @brief  Half Transfer: El DMA va por la muestra 63. La primera mitad está libre.
+  */
+void HAL_DAC_ConvHalfCpltCallbackCh2(DAC_HandleTypeDef *hdac) {
+    if (hdac->Instance == DAC1) {
+        // Seleccionar la tabla maestra activa
+        uint32_t *fuente = (onda_seleccionada == ONDA_SENOIDAL) ? master_sine : master_triangle;
+        
+        // Vuelco directo de memoria ultrarrápido (Cero matemática flotante en la ISR)
+        memcpy(&sine_lut[0], &fuente[0], MITAD_BUFFER * sizeof(uint32_t));
+    }
+}
+
+/**
+  * @brief  Transfer Complete: El DMA terminó la muestra 127. La segunda mitad está libre.
+  */
+void HAL_DAC_ConvCpltCallbackCh2(DAC_HandleTypeDef *hdac) {
+    if (hdac->Instance == DAC1) {
+        uint32_t *fuente = (onda_seleccionada == ONDA_SENOIDAL) ? master_sine : master_triangle;
+        
+        // Vuelco sobre el segundo bloque del buffer circular
+        memcpy(&sine_lut[MITAD_BUFFER], &fuente[MITAD_BUFFER], MITAD_BUFFER * sizeof(uint32_t));
+    }
+}
+
+/**
+  * @brief  Centinela de protección: Alarma ante cuellos de botella en los buses de la RAM.
+  */
+void HAL_DAC_DMAUnderrunCallbackCh2(DAC_HandleTypeDef *hdac) {
+    if (hdac->Instance == DAC1) {
+        // Breakpoint por hardware inmediato: Si el bus se traba y la señal se deforma,
+        // el depurador te congela el programa acá de forma exacta.
+        __BKPT(0); 
+    }
+}
