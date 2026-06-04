@@ -542,3 +542,13 @@ void HAL_DAC_DMAUnderrunCallbackCh2(DAC_HandleTypeDef *hdac) {
         __BKPT(0); 
     }
 }
+// Prueba de estrés dinámico dentro del bucle principal
+while (1) {
+    HAL_Delay(2000);
+    onda_seleccionada = ONDA_SENOIDAL;
+    set_signal_frequency_hz(2000); // Sube a 2 kHz
+    
+    HAL_Delay(2000);
+    onda_seleccionada = ONDA_TRIANGULAR;
+    set_signal_frequency_hz(1000); // Baja a 1 kHz
+}
